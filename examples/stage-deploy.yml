@@ -1,0 +1,168 @@
+# =============================================================================
+# Stage Deploy — publishes the product to the internal server at 172.20.20.45.
+# =============================================================================
+# Runs on every pull request that targets `stage`, so a change is looked at
+# running before it is merged, and again on push to `stage` so the branch and
+# the server never disagree.
+#
+# Why a self-hosted runner rather than SSH from a cloud runner: the server has a
+# private address that github.com cannot route to. A runner installed on the
+# machine dials out to GitHub instead, which needs no inbound firewall rule, no
+# public SSH port and no key stored in Secrets.
+#
+# Three ports, one per surface:
+#     8880 → backend (API + WebSocket)    5550 → dashboard (web)    3330 → landing
+#
+# The stack is the light one — SQLite, in-process cache, Celery inline, no
+# Postgres and no Redis. See the header of docker-compose.stage.yml for what
+# that costs. Production, when there is one, keeps the real services.
+#
+# See docs/deploy-stage.md for the one-time server setup.
+
+name: Stage Deploy
+
+on:
+  pull_request:
+    branches: [stage]
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [stage]
+  workflow_dispatch:
+    inputs:
+      deploy-tag:
+        description: "Roll back to an image tag already on the server, e.g. a1b2c3d"
+        required: false
+        type: string
+
+concurrency:
+  group: stage-deploy
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # Gate. Nothing reaches the server that does not lint, type-check and pass its
+  # tests — a staging box that is broken half the time stops being looked at.
+  # Skipped on a rollback: that image already passed on the way in.
+  # ───────────────────────────────────────────────────────────────────────────
+  verify-backend:
+    name: Verify backend
+    if: inputs.deploy-tag == ''
+    uses: CtrlAltDevelop/ci-workflows/.github/workflows/python-backend.yml@v1
+    with:
+      working-directory: sources/backend
+      mypy: true
+      postgres: false
+      redis: false
+      extra-env: STACK_LITE=true
+
+  verify-dashboard:
+    name: Verify dashboard
+    if: inputs.deploy-tag == ''
+    uses: CtrlAltDevelop/ci-workflows/.github/workflows/flutter-android.yml@v1
+    with:
+      working-directory: sources/dashboard
+      flutter-version: "3.47.0"
+      sign: false
+      codegen: |
+        dart run tool/generate_tokens.dart
+        flutter gen-l10n
+        dart run swagger_parser
+        dart run tool/patch_enums.dart --strict
+        dart run build_runner build --delete-conflicting-outputs
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Deploy. Runs on the test server itself.
+  # ───────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy
+    needs: [verify-backend, verify-dashboard]
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    uses: CtrlAltDevelop/ci-workflows/.github/workflows/deploy-stack.yml@v1
+    with:
+      runner-labels: '["self-hosted","linux","business-os","stage"]'
+      environment: stage
+      project-dir: /opt/business-os
+      env-file: .env.stage
+      compose-file: docker-compose.stage.yml
+      project-name: business-os-stage
+      images: >-
+        {"BACKEND_IMAGE":"business-os-backend",
+         "DASHBOARD_IMAGE":"business-os-dashboard",
+         "LANDING_IMAGE":"business-os-landing"}
+      deploy-tag: ${{ inputs.deploy-tag || '' }}
+      health-checks: >-
+        [{"name":"backend","url":"http://localhost:8880/health/"},
+         {"name":"dashboard","url":"http://localhost:5550/"},
+         {"name":"landing","url":"http://localhost:3330/"}]
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # An APK for the office network. Pinned to the LAN address, so it is useful
+  # on the same wifi as the server and nowhere else — which is what staging is.
+  # Debug-signed: there is no upload key yet, and a release key would not belong
+  # in a job that runs on a pull request anyway.
+  # ───────────────────────────────────────────────────────────────────────────
+  build-apk:
+    name: Build APK
+    needs: deploy
+    uses: CtrlAltDevelop/ci-workflows/.github/workflows/flutter-android.yml@v1
+    with:
+      working-directory: sources/dashboard
+      flutter-version: "3.47.0"
+      sign: false
+      api-base: http://172.20.20.45:8880/api/v1
+      artifact-name: dashboard-stage-apk
+      codegen: |
+        dart run tool/generate_tokens.dart
+        flutter gen-l10n
+        dart run swagger_parser
+        dart run tool/patch_enums.dart --strict
+        dart run build_runner build --delete-conflicting-outputs
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Leave the addresses on the pull request, so nobody has to look them up.
+  # ───────────────────────────────────────────────────────────────────────────
+  announce:
+    name: Comment on the PR
+    needs: [deploy, build-apk]
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const ok = '${{ needs.deploy.result }}' === 'success';
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const sha = context.payload.pull_request.head.sha.substring(0, 7);
+            const body = ok
+              ? [
+                  `### ✅ Deployed to stage — \`${sha}\``,
+                  '',
+                  '| | Address |',
+                  '|---|---|',
+                  '| Dashboard (web) | http://172.20.20.45:5550 |',
+                  '| Landing | http://172.20.20.45:3330 |',
+                  '| API | http://172.20.20.45:8880 |',
+                  '',
+                  'The web bundle resolves the API against whichever host you opened it from.',
+                  '',
+                  `**APK:** attached to [this run](${run}) under Artifacts, pinned to \`172.20.20.45:8880\`.`,
+                  '',
+                  `To roll back, run **Stage Deploy** from the Actions tab with \`deploy-tag\` set to an earlier commit.`,
+                ].join('\n')
+              : `### ❌ Stage deploy failed\n\nThe server was left on its previous build. [Logs](${run}).`;
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo, issue_number: context.issue.number,
+            });
+            const mine = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('to stage'));
+            if (mine) {
+              await github.rest.issues.updateComment({ ...context.repo, comment_id: mine.id, body });
+            } else {
+              await github.rest.issues.createComment({
+                ...context.repo, issue_number: context.issue.number, body,
+              });
+            }

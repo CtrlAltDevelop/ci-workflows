@@ -1,0 +1,112 @@
+# =============================================================================
+# Reusable: the security gate. Same four checks on every project.
+# =============================================================================
+# Split from python-backend.yml on purpose: these checks want their own
+# permissions (CodeQL writes to the security tab, dependency-review reads the
+# PR) and they should keep running on a schedule even when nobody pushes —
+# a dependency becomes vulnerable on a day you were not committing.
+#
+#   uses: CtrlAltDevelop/ci-workflows/.github/workflows/security.yml@v1
+#
+on:
+  workflow_call:
+    inputs:
+      languages:
+        description: 'CodeQL languages, JSON array, e.g. ["python","java-kotlin"]'
+        type: string
+        default: '["python"]'
+      dockerfiles:
+        description: "Newline-separated Dockerfile paths to scan, empty to skip"
+        type: string
+        default: ""
+
+permissions: {}
+
+jobs:
+  # Secrets first. A leaked key is the one finding that cannot be fixed by a
+  # commit — it has to be rotated, so it should be the loudest.
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks reads history, not just the tip: a key that was committed
+          # and then deleted is still in the pack file and still leaked.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ${{ fromJSON(inputs.languages) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@v3
+        with:
+          language: ${{ matrix.language }}
+          queries: security-extended
+      - uses: github/codeql-action/autobuild@v3
+      - uses: github/codeql-action/analyze@v3
+
+  # Filesystem scan: dependency manifests and IaC in one pass. Findings land in
+  # the security tab as SARIF rather than in a log nobody reads.
+  trivy:
+    name: Trivy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scanners: vuln,secret,misconfig
+          format: sarif
+          output: trivy.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy.sarif
+          category: trivy-fs
+
+  # Only on pull requests: blocks a *new* vulnerable or badly-licensed
+  # dependency from entering, without failing the build over the backlog of
+  # ones already there.
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure

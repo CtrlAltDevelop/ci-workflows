@@ -1,0 +1,289 @@
+# =============================================================================
+# Reusable: build on the server and bring the stack up.
+# =============================================================================
+# Runs on a self-hosted runner installed on the target machine, so nothing has
+# to reach in from the internet: the runner dials out to GitHub, and the server
+# needs no inbound rule, no public SSH port and no key in Secrets.
+#
+# No registry. Images are built on the machine that runs them and tagged with
+# the commit they came from — business-os-backend:a1b2c3d — which keeps the two
+# properties a registry would have given: a deploy names an exact build, and
+# rolling back is deploying an older tag rather than rebuilding and hoping.
+# The last few tags per image are kept; older ones are removed.
+#
+#   uses: CtrlAltDevelop/ci-workflows/.github/workflows/deploy-stack.yml@v1
+#
+on:
+  workflow_call:
+    inputs:
+      runner-labels:
+        description: 'JSON array, e.g. ["self-hosted","linux","business-os","stage"]'
+        type: string
+        required: true
+      environment:
+        description: "GitHub Environment this deploy is bound to"
+        type: string
+        required: true
+      project-dir:
+        description: "Directory on the server holding the env file, outside the checkout"
+        type: string
+        required: true
+      env-file:
+        description: |
+          Name the environment file is given in the workspace. Passed to compose
+          as --env-file, so it is both what the services read and where ${...}
+          substitution looks — compose reads ".env" by default and would not
+          otherwise see the image tags written below.
+        type: string
+        default: ".env"
+      compose-file:
+        type: string
+        required: true
+      project-name:
+        description: "docker compose -p, so stacks never collide on one host"
+        type: string
+        required: true
+      images:
+        description: |
+          JSON map of the environment variable each compose service reads its
+          image from, to the image name to build:
+            {"BACKEND_IMAGE":"business-os-backend"}
+        type: string
+        required: true
+      deploy-tag:
+        description: "Existing tag to roll back to. Empty builds this commit."
+        type: string
+        default: ""
+      migrate-service:
+        description: "Service to run migrations in, empty to skip"
+        type: string
+        default: "backend"
+      migrate-command:
+        type: string
+        default: "python manage.py migrate --noinput"
+      health-checks:
+        description: 'JSON array of {name,url} polled before the deploy counts'
+        type: string
+        default: "[]"
+      keep-images:
+        description: "How many old tags per image to keep for rollback"
+        type: number
+        default: 5
+
+permissions: {}
+
+concurrency:
+  # One deploy per stack. Not cancelled in flight: a half-applied migration is
+  # worse than a queued run.
+  group: deploy-${{ inputs.project-name }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    steps:
+      # A self-hosted runner must never execute code from a fork. Repository
+      # settings should already prevent it; this is the belt to those braces.
+      - name: Refuse untrusted sources
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ] && \
+             [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
+            echo "::error::Refusing to run fork code on a self-hosted runner."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          # The commit under review, not the merge preview, so the tag names
+          # something that exists in the branch.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Name this build
+        id: tag
+        env:
+          ROLLBACK: ${{ inputs.deploy-tag }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [ -n "$ROLLBACK" ]; then
+            echo "tag=$ROLLBACK" >> "$GITHUB_OUTPUT"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${SHA:0:7}" >> "$GITHUB_OUTPUT"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Secrets live on the server, outside the checkout, so a deploy can never
+      # rewrite one and a wiped workspace can never lose one.
+      - name: Take the server's environment file
+        run: |
+          src="${{ inputs.project-dir }}/${{ inputs.env-file }}"
+          if [ ! -f "$src" ]; then
+            echo "::error::No environment file at $src. See the runbook."
+            exit 1
+          fi
+          install -m 600 "$src" "${{ inputs.env-file }}"
+
+      - name: Point the stack at this build
+        env:
+          IMAGES: ${{ inputs.images }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          ENV_FILE: ${{ inputs.env-file }}
+        run: |
+          python3 -c '
+          import json, os
+          tag = os.environ["TAG"]
+          with open(os.environ["ENV_FILE"], "a", encoding="utf-8") as fh:
+              for var, name in json.loads(os.environ["IMAGES"]).items():
+                  fh.write("\n" + var + "=" + name + ":" + tag)
+              fh.write("\n")
+          '
+          echo "Deploying tag $TAG"
+
+      - name: Record what is running now
+        id: previous
+        continue-on-error: true
+        run: |
+          docker compose -p "${{ inputs.project-name }}" \
+            --env-file "${{ inputs.env-file }}" -f "${{ inputs.compose-file }}" \
+            images > previous.txt
+          cat previous.txt
+
+      - name: Build
+        if: steps.tag.outputs.build == 'true'
+        run: |
+          docker compose -p "${{ inputs.project-name }}" \
+            --env-file "${{ inputs.env-file }}" -f "${{ inputs.compose-file }}" \
+            build --pull
+
+      # A rollback deploys a tag that must already be on disk. Saying so here
+      # beats a compose error that reads like a network problem.
+      - name: Check the rollback tag exists
+        if: steps.tag.outputs.build == 'false'
+        env:
+          IMAGES: ${{ inputs.images }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          python3 -c '
+          import json, os, subprocess, sys
+          tag = os.environ["TAG"]
+          missing = []
+          for name in json.loads(os.environ["IMAGES"]).values():
+              ref = name + ":" + tag
+              probe = subprocess.run(["docker", "image", "inspect", ref],
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+              if probe.returncode != 0:
+                  missing.append(ref)
+          if missing:
+              print("::error::Not on this server: " + ", ".join(missing))
+              sys.exit(1)
+          '
+
+      - name: Start the stack
+        run: |
+          docker compose -p "${{ inputs.project-name }}" \
+            --env-file "${{ inputs.env-file }}" -f "${{ inputs.compose-file }}" \
+            up -d --remove-orphans
+
+      # Against the container that is already up, so migrations see exactly the
+      # environment the app runs with.
+      - name: Apply migrations
+        if: inputs.migrate-service != ''
+        run: |
+          docker compose -p "${{ inputs.project-name }}" \
+            --env-file "${{ inputs.env-file }}" -f "${{ inputs.compose-file }}" \
+            exec -T "${{ inputs.migrate-service }}" ${{ inputs.migrate-command }}
+
+      - name: Wait for the services to answer
+        if: inputs.health-checks != '[]'
+        env:
+          CHECKS: ${{ inputs.health-checks }}
+        run: |
+          python3 -c '
+          import json, os, subprocess, sys, time
+          for t in json.loads(os.environ["CHECKS"]):
+              name, url = t["name"], t["url"]
+              for _ in range(30):
+                  probe = ["curl", "-sf", "-m", "5", "-o", "/dev/null", url]
+                  if subprocess.run(probe).returncode == 0:
+                      print(name + " OK")
+                      break
+                  time.sleep(5)
+              else:
+                  print("::error::" + name + " never answered at " + url)
+                  sys.exit(1)
+          '
+
+      - name: Logs on failure
+        if: failure()
+        run: |
+          docker compose -p "${{ inputs.project-name }}" \
+            --env-file "${{ inputs.env-file }}" -f "${{ inputs.compose-file }}" \
+            logs --tail=200 || true
+
+      # Deliberately not automatic. Rolling a schema change back without a human
+      # looking at it turns one broken deploy into a lost database, so the
+      # previous tags are printed instead and the rollback is one dispatch.
+      - name: How to roll back
+        if: failure()
+        run: |
+          {
+            echo "### Deploy failed — ${{ steps.tag.outputs.tag }}"
+            echo ""
+            echo "Running before this attempt:"
+            echo '```'
+            cat previous.txt 2>/dev/null || echo "(nothing was running)"
+            echo '```'
+            echo ""
+            echo "Re-run this workflow with **deploy-tag** set to one of those tags."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Keeps the last few tags per image so a rollback has somewhere to go, and
+      # stops a machine that redeploys per pull request from filling up.
+      - name: Trim old images
+        if: always()
+        env:
+          IMAGES: ${{ inputs.images }}
+          KEEP: ${{ inputs.keep-images }}
+        run: |
+          python3 -c '
+          import json, os, subprocess
+          keep = int(os.environ["KEEP"])
+          for name in json.loads(os.environ["IMAGES"]).values():
+              listing = subprocess.run(
+                  ["docker", "images", name, "--format", "{{.Tag}}|{{.CreatedAt}}"],
+                  capture_output=True, text=True).stdout
+              rows = [line.split("|", 1) for line in listing.splitlines() if "|" in line]
+              # "local" is the compose default and is never a deployed build, so
+              # it is not counted against the budget. Newest first.
+              rows = [r for r in rows if r[0] not in ("local", "<none>")]
+              rows.sort(key=lambda r: r[1], reverse=True)
+              for tag, _ in rows[keep:]:
+                  subprocess.run(["docker", "rmi", name + ":" + tag],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                  print("removed " + name + ":" + tag)
+          '
+          docker image prune -f
+
+      - name: Clean up
+        if: always()
+        run: rm -f "${{ inputs.env-file }}"
+
+      - name: Report
+        if: success()
+        run: |
+          {
+            echo "### Deployed to ${{ inputs.environment }} — ${{ steps.tag.outputs.tag }}"
+            echo ""
+            echo '```'
+            docker compose -p "${{ inputs.project-name }}" \
+            --env-file "${{ inputs.env-file }}" -f "${{ inputs.compose-file }}" ps
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,66 @@
+# =============================================================================
+# CI — the gate in front of `develop`.
+# =============================================================================
+# Every piece of work is a branch, opened as a pull request against `develop`.
+# This runs there and nowhere near a server: cloud runners only, no secret, no
+# access to the office network. Merging is what "green" buys you.
+#
+# The heavy lifting lives in CtrlAltDevelop/ci-workflows so the other projects
+# run the same checks without four copies drifting apart.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [develop]
+  push:
+    branches: [develop]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  backend:
+    name: Backend
+    uses: CtrlAltDevelop/ci-workflows/.github/workflows/python-backend.yml@v1
+    with:
+      working-directory: sources/backend
+      mypy: true
+      # The suite runs on the light stack — SQLite, in-process cache, Celery
+      # inline — which is what the staging server runs too. Nothing here needs
+      # a database container.
+      postgres: false
+      redis: false
+      extra-env: STACK_LITE=true
+
+  security:
+    name: Security
+    uses: CtrlAltDevelop/ci-workflows/.github/workflows/security.yml@v1
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
+    with:
+      # Python only. The Android side is Flutter scaffolding whose Gradle build
+      # CodeQL cannot resolve without a Flutter toolchain, and analysing it
+      # would report on generated code rather than on anything written here.
+      languages: '["python"]'
+
+  dashboard:
+    name: Dashboard
+    uses: CtrlAltDevelop/ci-workflows/.github/workflows/flutter-android.yml@v1
+    with:
+      working-directory: sources/dashboard
+      flutter-version: "3.47.0"
+      # Debug-signed. This job is reachable from a pull request, so it must
+      # never be handed the upload key.
+      sign: false
+      codegen: |
+        dart run tool/generate_tokens.dart
+        flutter gen-l10n
+        dart run swagger_parser
+        dart run tool/patch_enums.dart --strict
+        dart run build_runner build --delete-conflicting-outputs

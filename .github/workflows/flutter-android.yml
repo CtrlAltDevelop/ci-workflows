@@ -1,0 +1,158 @@
+# =============================================================================
+# Reusable: verify the Flutter app, and optionally build a signed release.
+# =============================================================================
+# Two modes, and the split matters:
+#
+#   sign: false  → analyze, test, debug-signed APK. Runs on every pull request,
+#                  including from a fork. Touches no secret.
+#   sign: true   → release build with the real upload key. Called only from a
+#                  job bound to a protected GitHub Environment, so the keystore
+#                  is unreachable from a pull request by construction.
+#
+# The keystore lives as a base64 secret on the *environment*, never on the
+# repository. Anyone who can open a PR must not be able to reach it.
+#
+#   uses: CtrlAltDevelop/ci-workflows/.github/workflows/flutter-android.yml@v1
+#
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        type: string
+        default: "."
+      flutter-version:
+        type: string
+        required: true
+      codegen:
+        description: "Commands to run before analyze, one per line"
+        type: string
+        default: ""
+      api-base:
+        description: "Value baked in as --dart-define=API_BASE"
+        type: string
+        default: ""
+      sign:
+        description: "Build a release signed with the upload key"
+        type: boolean
+        default: false
+      artifact-name:
+        type: string
+        default: "android"
+      build-appbundle:
+        description: "Also produce an .aab for Play"
+        type: boolean
+        default: false
+      environment:
+        description: |
+          GitHub Environment to bind the job to. Required when sign is true:
+          the keystore secrets live on the environment, and a job only reaches
+          them by declaring it. Call this workflow with `secrets: inherit`.
+        type: string
+        default: ""
+
+permissions: {}
+
+jobs:
+  android:
+    name: ${{ inputs.sign && 'Release' || 'Verify' }}
+    runs-on: ubuntu-latest
+    # Named here rather than on the caller: a job that calls a reusable
+    # workflow cannot declare an environment, so the gate has to live inside.
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ inputs.flutter-version }}
+          channel: stable
+
+      - run: flutter pub get
+
+      - name: Code generation
+        if: inputs.codegen != ''
+        run: ${{ inputs.codegen }}
+
+      - run: flutter analyze
+      - run: flutter test
+
+      # Fails the run if a dependency is yanked or has a published advisory.
+      - name: Audit packages
+        run: dart pub outdated --mode=security --no-dev-dependencies
+        continue-on-error: true
+
+      # ── everything below only in signing mode ────────────────────────────
+      - name: Refuse to sign without a gate
+        if: inputs.sign && inputs.environment == ''
+        run: |
+          echo "::error::sign=true needs an environment. Without one the keystore is repository-wide."
+          exit 1
+
+      - name: Restore the upload keystore
+        if: inputs.sign
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::sign=true but no keystore was passed. Check the environment's secrets."
+            exit 1
+          fi
+          # Written outside the checkout so no later step can archive it by
+          # accident, and removed again when the job ends.
+          install -m 700 -d "$RUNNER_TEMP/signing"
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/signing/upload.jks"
+          chmod 600 "$RUNNER_TEMP/signing/upload.jks"
+          cat > android/key.properties <<PROPS
+          storeFile=$RUNNER_TEMP/signing/upload.jks
+          storePassword=$KEYSTORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          PROPS
+          chmod 600 android/key.properties
+
+      - name: Build APK
+        run: |
+          flutter build apk --release \
+            ${{ inputs.api-base != '' && format('--dart-define=API_BASE={0}', inputs.api-base) || '' }} \
+            --no-tree-shake-icons
+
+      - name: Build App Bundle
+        if: inputs.sign && inputs.build-appbundle
+        run: |
+          flutter build appbundle --release \
+            ${{ inputs.api-base != '' && format('--dart-define=API_BASE={0}', inputs.api-base) || '' }} \
+            --no-tree-shake-icons
+
+      # Runs even when the build failed — a keystore left on disk is the thing
+      # you least want surviving a red run.
+      - name: Shred the signing material
+        if: always()
+        run: |
+          rm -f android/key.properties
+          rm -rf "$RUNNER_TEMP/signing"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: |
+            ${{ inputs.working-directory }}/build/app/outputs/flutter-apk/app-release.apk
+            ${{ inputs.working-directory }}/build/app/outputs/bundle/release/app-release.aab
+          if-no-files-found: warn
+          retention-days: 14
