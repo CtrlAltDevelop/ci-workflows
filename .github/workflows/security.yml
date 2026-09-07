@@ -97,7 +97,9 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
-      security-events: ${{ inputs.sarif && 'write' || 'none' }}
+      # Static on purpose: `permissions` is resolved before inputs exist, so it
+      # cannot be narrowed by one. Unused when sarif is off.
+      security-events: write
     steps:
       - uses: actions/checkout@v4
         with:
