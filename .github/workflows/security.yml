@@ -1,24 +1,45 @@
 # =============================================================================
-# Reusable: the security gate. Same four checks on every project.
+# Reusable: the security gate. Same checks on every project.
 # =============================================================================
 # Split from python-backend.yml on purpose: these checks want their own
-# permissions (CodeQL writes to the security tab, dependency-review reads the
-# PR) and they should keep running on a schedule even when nobody pushes —
-# a dependency becomes vulnerable on a day you were not committing.
+# permissions and they should keep running on a schedule even when nobody
+# pushes — a dependency becomes vulnerable on a day you were not committing.
+#
+# Three of the four checks below need GitHub Advanced Security, which a private
+# repository on the Free plan does not have: code scanning is off, so CodeQL
+# cannot run, SARIF cannot be uploaded, and dependency-review has no API to ask.
+# They are therefore opt-in rather than on by default — turn them on for a
+# public repository, or once a plan carries them. What is left works on any
+# plan and is not a token gesture: secrets over full history, and a filesystem
+# scan that fails the build rather than filing a report nobody can read.
 #
 #   uses: CtrlAltDevelop/ci-workflows/.github/workflows/security.yml@v1
 #
 on:
   workflow_call:
     inputs:
+      codeql:
+        description: "Run CodeQL. Needs code scanning, so public or GHAS only."
+        type: boolean
+        default: false
       languages:
-        description: 'CodeQL languages, JSON array, e.g. ["python","java-kotlin"]'
+        description: 'CodeQL languages, JSON array, e.g. ["python"]'
         type: string
         default: '["python"]'
-      dockerfiles:
-        description: "Newline-separated Dockerfile paths to scan, empty to skip"
+      dependency-review:
+        description: "Review new dependencies on a PR. Public or GHAS only."
+        type: boolean
+        default: false
+      sarif:
+        description: |
+          Upload findings to the security tab instead of failing the job on
+          them. Needs code scanning, so public or GHAS only.
+        type: boolean
+        default: false
+      severity:
+        description: "Trivy severities that count"
         type: string
-        default: ""
+        default: "CRITICAL,HIGH"
 
 permissions: {}
 
@@ -44,6 +65,7 @@ jobs:
 
   codeql:
     name: CodeQL (${{ matrix.language }})
+    if: inputs.codeql
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -59,34 +81,51 @@ jobs:
           persist-credentials: false
       - uses: github/codeql-action/init@v3
         with:
-          language: ${{ matrix.language }}
+          # `languages`, not `language`. The singular is silently ignored, and
+          # CodeQL then auto-detects everything in the tree — including the
+          # Swift under a Flutter app's macos/ directory, which fails on a
+          # Linux runner for a reason that has nothing to do with your code.
+          languages: ${{ matrix.language }}
           queries: security-extended
       - uses: github/codeql-action/autobuild@v3
       - uses: github/codeql-action/analyze@v3
 
-  # Filesystem scan: dependency manifests and IaC in one pass. Findings land in
-  # the security tab as SARIF rather than in a log nobody reads.
+  # Filesystem scan: dependency manifests and IaC in one pass.
   trivy:
     name: Trivy
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
-      security-events: write
+      security-events: ${{ inputs.sarif && 'write' || 'none' }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      # Without a security tab to file into, the finding has to stop the build
+      # or it may as well not have been made.
       - uses: aquasecurity/trivy-action@v0.36.0
+        if: ${{ !inputs.sarif }}
+        with:
+          scan-type: fs
+          scanners: vuln,secret,misconfig
+          format: table
+          exit-code: "1"
+          severity: ${{ inputs.severity }}
+          ignore-unfixed: true
+
+      - uses: aquasecurity/trivy-action@v0.36.0
+        if: inputs.sarif
         with:
           scan-type: fs
           scanners: vuln,secret,misconfig
           format: sarif
           output: trivy.sarif
-          severity: CRITICAL,HIGH
+          severity: ${{ inputs.severity }}
           ignore-unfixed: true
       - uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        if: inputs.sarif && always()
         with:
           sarif_file: trivy.sarif
           category: trivy-fs
@@ -96,7 +135,7 @@ jobs:
   # ones already there.
   dependency-review:
     name: Dependency review
-    if: github.event_name == 'pull_request'
+    if: inputs.dependency-review && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
