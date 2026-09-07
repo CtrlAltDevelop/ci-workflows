@@ -42,6 +42,13 @@ on:
           are still printed, and the job summary carries the count.
         type: boolean
         default: true
+      test-requirements:
+        description: |
+          Space-separated packages the suite needs on top of `requirements`.
+          A runtime requirements file rarely carries pytest, and pointing this
+          at a project's dev file would drag in its formatters and shells too.
+        type: string
+        default: "pytest pytest-django"
       test-command:
         type: string
         default: "pytest -q --tb=short"
@@ -110,7 +117,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r "${{ inputs.requirements }}"
-          pip install ruff mypy pip-audit
+          pip install ruff mypy pip-audit ${{ inputs.test-requirements }}
 
       - name: Lint
         id: lint
