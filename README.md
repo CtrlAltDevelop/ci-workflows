@@ -36,8 +36,8 @@ image erases.
 
 | File | Does | Sees secrets |
 |---|---|---|
-| `python-backend.yml` | ruff, mypy, pytest (Postgres/Redis optional), `pip-audit` | no |
-| `security.yml` | gitleaks over full history, CodeQL, Trivy, dependency-review | no |
+| `python-backend.yml` | ruff, mypy, pytest (Postgres/Redis optional), `pip-audit` — lint and mypy gate or report per project | no |
+| `security.yml` | gitleaks over full history, Trivy; CodeQL and dependency-review opt-in (need GHAS) | no |
 | `flutter-android.yml` | analyze, test, APK/AAB — signed only behind an environment | keystore, gated |
 | `deploy-stack.yml` | build on the server, compose up, migrate, health, trim, roll back | server-side only |
 
@@ -81,14 +81,30 @@ job that `uses:` a reusable workflow cannot declare one — so the declaration
 sits inside `flutter-android.yml`, and `sign: true` without an environment fails
 on purpose. Pull-request builds are debug-signed and see nothing.
 
-**The branch is the real gate.** Anyone who can push to the deploy branch can
-run code on the server, because that is what a deploy is. Protect `develop` and
-`stage` with a ruleset requiring the CI checks, and put a passkey on the GitHub
-account. For a solo project this is the control that matters; a required
-reviewer you approve yourself is a confirmation dialog, not a check.
+**The gate lives in the workflow, not on the branch.** Anyone who can push to
+the deploy branch can run code on the server, because that is what a deploy is —
+so the instinct is to protect the branch. Be aware that branch rulesets are *not
+enforced* on a private repository owned by a personal Free account, and required
+reviewers on an environment are not offered there either. What actually holds is
+that the deploy job `needs:` the verify jobs: a failing test never reaches the
+machine however the branch was moved. Add the ruleset as well on any account
+that can enforce one, and put a passkey on the GitHub account either way — with
+no branch protection it is the only thing between an attacker and the server.
 
-**Findings go where they are read.** Trivy and CodeQL upload SARIF to the
-security tab rather than failing quietly in a log.
+**Findings have to land somewhere they can be read.** The security tab is the
+natural home, but code scanning needs GitHub Advanced Security, which a private
+repository on a Free account does not have — CodeQL cannot run there, SARIF
+cannot be uploaded, and dependency-review has no API to ask. Those three are
+therefore opt-in (`codeql`, `sarif`, `dependency-review`). What runs by default
+works on any plan: gitleaks over full history, and a Trivy scan that fails the
+build instead of filing a report into a tab that is switched off.
+
+**A gate nobody can pass is not a gate.** `lint-blocking: false` is there for a
+project whose lint backlog predates the pipeline — business-os carries 10372
+ruff findings under its own `select = ["ALL"]`. The findings are still printed
+and the top rules go in the job summary; what changes is that a deploy is not
+held hostage to a cleanup nobody has scheduled. Turn it back on per project the
+day the backlog is worked down.
 
 ### Two things still open
 
