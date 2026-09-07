@@ -34,6 +34,14 @@ on:
         description: "Fail the run on type errors (off until a project is clean)"
         type: boolean
         default: false
+      lint-blocking:
+        description: |
+          Whether a lint finding fails the run. Turn it off on a project whose
+          lint backlog predates the pipeline: a gate nobody can pass is not a
+          gate, and leaving it red teaches everyone to ignore red. The findings
+          are still printed, and the job summary carries the count.
+        type: boolean
+        default: true
       test-command:
         type: string
         default: "pytest -q --tb=short"
@@ -95,7 +103,20 @@ jobs:
           pip install ruff mypy pip-audit
 
       - name: Lint
-        run: ruff check .
+        id: lint
+        continue-on-error: ${{ !inputs.lint-blocking }}
+        run: ruff check . --output-format concise
+
+      - name: Note the lint backlog
+        if: steps.lint.outcome == 'failure'
+        run: |
+          {
+            echo "### Lint is not blocking on this project"
+            echo ""
+            echo '```'
+            ruff check . --statistics | head -20
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Format check
         run: ruff format --check .
