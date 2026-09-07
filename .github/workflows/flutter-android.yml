@@ -31,6 +31,13 @@ on:
         description: "Value baked in as --dart-define=API_BASE"
         type: string
         default: ""
+      build:
+        description: |
+          Produce an APK and attach it to the run. Off by default: verifying a
+          branch means analyze and test, and a full release build on every
+          commit costs minutes nobody reads the output of. Implied by `sign`.
+        type: boolean
+        default: false
       sign:
         description: "Build a release signed with the upload key"
         type: boolean
@@ -54,7 +61,7 @@ permissions: {}
 
 jobs:
   android:
-    name: ${{ inputs.sign && 'Release' || 'Verify' }}
+    name: ${{ (inputs.build || inputs.sign) && 'Build' || 'Verify' }}
     runs-on: ubuntu-latest
     # Named here rather than on the caller: a job that calls a reusable
     # workflow cannot declare an environment, so the gate has to live inside.
@@ -128,6 +135,7 @@ jobs:
           chmod 600 android/key.properties
 
       - name: Build APK
+        if: inputs.build || inputs.sign
         run: |
           flutter build apk --release \
             ${{ inputs.api-base != '' && format('--dart-define=API_BASE={0}', inputs.api-base) || '' }} \
@@ -149,6 +157,7 @@ jobs:
           rm -rf "$RUNNER_TEMP/signing"
 
       - uses: actions/upload-artifact@v4
+        if: inputs.build || inputs.sign
         with:
           name: ${{ inputs.artifact-name }}
           path: |
