@@ -59,7 +59,10 @@ jobs:
           # and then deleted is still in the pack file and still leaked.
           fetch-depth: 0
           persist-credentials: false
-      - uses: gitleaks/gitleaks-action@v2
+      # v3 only moves the runtime to Node 24. Node 20 leaves the hosted
+      # runners entirely on 16 September 2026, after which v2 stops running
+      # whatever opt-out flag is set.
+      - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ github.token }}
 

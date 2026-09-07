@@ -119,13 +119,24 @@ jobs:
           pip install -r "${{ inputs.requirements }}"
           pip install ruff mypy pip-audit ${{ inputs.test-requirements }}
 
+      # The exit code is caught here rather than left to continue-on-error,
+      # which lets the step fail and then forgives it — GitHub still files the
+      # failure as an annotation, so a green run wears two red marks that mean
+      # nothing. The findings go to the summary instead.
       - name: Lint
         id: lint
-        continue-on-error: ${{ !inputs.lint-blocking }}
-        run: ruff check . --output-format concise
+        env:
+          BLOCKING: ${{ inputs.lint-blocking }}
+        run: |
+          if ruff check . --output-format concise; then
+            echo "clean=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "clean=false" >> "$GITHUB_OUTPUT"
+            [ "$BLOCKING" != "true" ] || exit 1
+          fi
 
       - name: Note the lint backlog
-        if: steps.lint.outcome == 'failure'
+        if: steps.lint.outputs.clean == 'false'
         run: |
           {
             echo "### Lint is not blocking on this project"
@@ -136,8 +147,9 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Format check
-        run: ruff format --check .
-        continue-on-error: true
+        run: |
+          ruff format --check . ||
+            echo "::notice::Formatting differs from ruff format. Not blocking."
 
       - name: Type check
         if: inputs.mypy
