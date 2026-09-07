@@ -172,4 +172,8 @@ jobs:
           # Deliberately a throwaway. A real key must never reach a PR runner.
           DJANGO_SECRET_KEY: ci-only-not-a-real-key
           SECRET_KEY: ci-only-not-a-real-key
-          DJANGO_DEBUG: "false"
+          # DJANGO_DEBUG is deliberately not set here. Whether a suite runs with
+          # DEBUG on is the project's decision, made in its test settings, and a
+          # value forced from the harness overrides the `setdefault` such a
+          # module uses — which is how 242 tests came to be answered with a
+          # 301 to https, from SECURE_SSL_REDIRECT switching itself on.
