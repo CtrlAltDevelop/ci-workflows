@@ -49,6 +49,16 @@ on:
         description: "Newline-separated KEY=VALUE pairs for the test step"
         type: string
         default: ""
+      audit-ignore:
+        description: |
+          Space-separated advisory IDs pip-audit should not fail on — for a
+          finding in a transitive dependency with no published fix, where the
+          only alternatives are to drop the parent package or to stop auditing
+          entirely. Each ID is a decision to ship a known vulnerability, so say
+          which package and why in a comment beside it, and take it out again
+          when a fix lands.
+        type: string
+        default: ""
 
 # Read the code, nothing more. Every job below inherits this.
 permissions: {}
@@ -129,7 +139,15 @@ jobs:
       # Known-vulnerable dependencies fail the build here rather than being
       # found later by whoever is scanning the running server.
       - name: Audit dependencies
-        run: pip-audit -r "${{ inputs.requirements }}" --strict
+        env:
+          IGNORE: ${{ inputs.audit-ignore }}
+        run: |
+          args=""
+          for id in $IGNORE; do
+            args="$args --ignore-vuln $id"
+            echo "::warning::Ignoring $id — see the caller for why"
+          done
+          pip-audit -r "${{ inputs.requirements }}" --strict $args
 
       - name: Collect extra environment
         if: inputs.extra-env != ''
