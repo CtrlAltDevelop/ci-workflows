@@ -97,10 +97,10 @@ jobs:
       - run: flutter analyze
       - run: flutter test
 
-      # Fails the run if a dependency is yanked or has a published advisory.
-      - name: Audit packages
-        run: dart pub outdated --mode=security --no-dev-dependencies
-        continue-on-error: true
+      # No dependency audit here, on purpose: pub has no advisory command that
+      # exits non-zero, so there is nothing honest to run. Dart packages are
+      # covered twice regardless — Trivy reads pubspec.lock in security.yml,
+      # and Dependabot watches the pub ecosystem.
 
       # ── everything below only in signing mode ────────────────────────────
       - name: Refuse to sign without a gate
