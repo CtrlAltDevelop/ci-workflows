@@ -15,7 +15,7 @@ on:
         default: "."
       python-version:
         type: string
-        default: "3.12"
+        default: "3.14"
       requirements:
         description: "Requirements file, relative to working-directory"
         type: string

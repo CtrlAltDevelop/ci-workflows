@@ -1,132 +1,106 @@
 # ci-workflows
 
-One pipeline, four projects. Each project keeps two short files; everything that
-is actually complicated lives here once and is versioned once.
+Reusable GitHub Actions checks for Python and Flutter projects. Each caller
+project keeps one thin workflow file; everything complicated — lint, type
+checks, tests, dependency and secret scanning — lives here once and is
+versioned once.
 
-Push this directory to `CtrlAltDevelop/ci-workflows` (**private**), then tag it:
+**Checks only.** There is no deploy workflow here, and that is deliberate — see
+*Why there is no deploy* below.
 
-```bash
-git tag -a v1 -m "v1" && git push origin v1
-```
-
-Callers reference `@v1`. Moving that tag rolls every project forward at once —
-which is the point of a shared repo, and also its main risk. See *Releasing*.
-
-## The shape
-
-```
-feature branch ──PR──► develop     CI only. Cloud runners, no secret, no
-                                    access to the office network.
-
-develop ────────PR──► stage        the same checks, then build and start the
-                                    stack on the project's own server, over a
-                                    runner installed on that machine.
-
-main                                production, when there is one.
-```
-
-No registry. Images are built on the machine that runs them and tagged with the
-commit they came from — `business-os-backend:a1b2c3d` — which keeps the two
-properties a registry would have given: a deploy names an exact build, and
-rolling back is deploying an older tag rather than rebuilding and hoping. It
-also stays free: private packages on GHCR have a 500 MB quota that one Django
-image erases.
-
-## The four workflows
+## The three workflows
 
 | File | Does | Sees secrets |
 |---|---|---|
-| `python-backend.yml` | ruff, mypy, pytest (Postgres/Redis optional), `pip-audit` — lint and mypy gate or report per project | no |
-| `security.yml` | gitleaks over full history, Trivy; CodeQL and dependency-review opt-in (need GHAS) | no |
-| `flutter-android.yml` | analyze, test, APK/AAB — signed only behind an environment | keystore, gated |
-| `deploy-stack.yml` | build on the server, compose up, migrate, health, trim, roll back | server-side only |
+| `python-backend.yml` | ruff, mypy, pytest (Postgres/Redis optional), `pip-audit` | no |
+| `security.yml` | gitleaks over full history, CodeQL, Trivy, dependency-review | no |
+| `flutter-android.yml` | analyze, test, and an APK when asked for one | keystore, only when signing |
 
-## Onboarding a project
+All three run on GitHub's cloud runners. None of them touches a server, holds a
+key, or has any route into a private network.
 
-1. Copy `examples/ci.yml`, `examples/stage-deploy.yml` and
-   `examples/dependabot.yml` into the project's `.github/`.
-2. Adjust `working-directory`, the `images` map, `project-name`, `project-dir`,
-   the ports in `health-checks`, and the runner labels.
-3. Create the `stage` environment in the project's repository settings.
-4. Install a runner on that project's server with matching labels.
+## Using it
 
-Roughly twenty lines of project-specific YAML. Nothing else is copied, so a fix
-here fixes all four.
+Copy `examples/ci.yml` into a project's `.github/workflows/`, and
+`examples/dependabot.yml` into its `.github/`. Delete the jobs and ecosystems
+you don't need (a Python-only repo drops the `app` job and the `pub`/`gradle`
+entries; a Flutter-only repo drops `backend` and `pip`/`docker`), then adjust
+`working-directory`, the Flutter version and the codegen commands to match your
+layout. That is the whole integration — about twenty lines per project, so a
+fix here fixes every project at once.
 
-Several projects can share one machine: give each its own runner labels, its own
-`docker compose -p` project name, and its own port range.
+Each workflow's inputs are documented as comments in its `on: workflow_call:`
+block — see [`python-backend.yml`](.github/workflows/python-backend.yml),
+[`flutter-android.yml`](.github/workflows/flutter-android.yml) and
+[`security.yml`](.github/workflows/security.yml) for the full list.
 
----
+## The moving tag, and how it bites
 
-## Security, and why each piece is there
+Callers reference `@v1`, which is resolved **when a run starts**. Change a
+workflow here, forget to move the tag, and the next run silently uses the old
+version — the failure then looks exactly like a bug you already fixed. This cost
+two debugging sessions during bring-up.
 
-**No inbound port.** The servers are on `172.20.x.x`. Instead of exposing SSH
-and storing a private key in Secrets, each server runs a runner that dials out
-to GitHub. Nothing to port-forward, nothing to brute-force, no key to rotate.
+Push and retag in one command, always:
 
-**Least privilege by default.** Every workflow starts `permissions: {}` and each
-job asks for exactly what it needs.
+```bash
+git push origin main && git tag -f -a v1 -m "v1" && git push -f origin v1
+```
 
-**Fork code never reaches a self-hosted runner.** Set *Fork pull request
-workflows → require approval for all outside collaborators*, and never use
-`pull_request_target`. `deploy-stack.yml` re-checks it as a backstop.
+For a change that breaks callers, cut `v2` and migrate projects one at a time
+rather than moving `v1`.
 
-**Secrets stay on the server.** The environment file lives in `/opt/<project>/`,
-outside the checkout, copied in at deploy and deleted afterwards. A deploy
-cannot overwrite a secret and a wiped workspace cannot lose one.
+## Access
 
-**The keystore is gated.** Android release signing requires an environment. A
-job only reaches environment secrets by declaring the environment, and a caller
-job that `uses:` a reusable workflow cannot declare one — so the declaration
-sits inside `flutter-android.yml`, and `sign: true` without an environment fails
-on purpose. Pull-request builds are debug-signed and see nothing.
+This repository is public, so any repository can call these workflows with no
+extra setup. If you fork it and keep the fork private, a caller in a different
+private repository needs *Settings → Actions → General → Access* set to
+**accessible from repositories owned by the user** on this repo — without it
+every caller fails with "reusable workflow not found", which is not an obvious
+error message.
 
-**The gate lives in the workflow, not on the branch.** Anyone who can push to
-the deploy branch can run code on the server, because that is what a deploy is —
-so the instinct is to protect the branch. Be aware that branch rulesets are *not
-enforced* on a private repository owned by a personal Free account, and required
-reviewers on an environment are not offered there either. What actually holds is
-that the deploy job `needs:` the verify jobs: a failing test never reaches the
-machine however the branch was moved. Add the ruleset as well on any account
-that can enforce one, and put a passkey on the GitHub account either way — with
-no branch protection it is the only thing between an attacker and the server.
+## Why there is no deploy
 
-**Findings have to land somewhere they can be read.** The security tab is the
-natural home, but code scanning needs GitHub Advanced Security, which a private
-repository on a Free account does not have — CodeQL cannot run there, SARIF
-cannot be uploaded, and dependency-review has no API to ask. Those three are
-therefore opt-in (`codeql`, `sarif`, `dependency-review`). What runs by default
-works on any plan: gitleaks over full history, and a Trivy scan that fails the
-build instead of filing a report into a tab that is switched off.
+There was a `deploy-stack.yml`: it built on the target server through a
+self-hosted runner, tagged images by commit, ran migrations and health checks,
+and rolled back by tag. It was removed in September 2026, and the reasons are
+worth keeping so the idea is not reinvented without them:
 
-**A gate nobody can pass is not a gate.** `lint-blocking: false` is there for a
-project whose lint backlog predates the pipeline — business-os carries 10372
-ruff findings under its own `select = ["ALL"]`. The findings are still printed
-and the top rules go in the job summary; what changes is that a deploy is not
-held hostage to a cleanup nobody has scheduled. Turn it back on per project the
-day the backlog is worked down.
+- **Two repositories and one moving tag.** Every pipeline fix meant a commit
+  here, a retag, and a re-trigger in the calling project. A meaningful share of
+  the failures during bring-up were not real — they were runs that started
+  before the tag moved.
+- **A self-hosted runner is a standing shell inside the network.** It executes
+  repository code as a user in the `docker` group, which on Linux is
+  root-equivalent. That is a fair trade for real automation and a poor one for
+  automation that is fighting you.
+- **The gain was small at this size.** One developer per project, one test
+  server. What a deploy pipeline really buys is safety when several people push
+  and nobody is watching.
 
-### Two things still open
+Deploying is now a command on the server — `git pull` and
+`docker compose up -d --build`, wrapped in a `make` target. What that costs,
+stated plainly: nothing prevents deploying untested code, there is no deploy
+history, and rollback is a checkout rather than a click.
 
-- **Android is debug-signed.** Before `sign: true` does anything, generate an
-  upload keystore, wire `key.properties` into the Gradle signing config, and
-  enable Play App Signing so the distribution key is Google's problem rather
-  than a base64 blob in a secret.
-- **Actions are pinned to tags, not commit SHAs.** A tag is mutable, which is
-  the supply-chain hole this file otherwise argues against. Convert them once
-  with `pinact run` (or `ratchet pin`) and let Dependabot maintain them — the
-  SHAs are not something to write by hand.
+That is a size-appropriate trade, not a permanent verdict. When a project gets a
+production server or a second person pushing, rebuilding the deploy half is the
+right call — start from the git history of this repository, where the removed
+workflow still lives.
 
-## One-time account settings
+## Security notes for the checks that remain
 
-- Actions → **Allow select actions**, and *require actions pinned to a
-  full-length commit SHA* once the pinning pass above is done.
-- Default `GITHUB_TOKEN` permissions → **read only**.
-- Fork PR workflows → **require approval from all outside collaborators**.
-- Secret scanning with **push protection**, on every repository.
+- Every workflow starts `permissions: {}`; each job asks for exactly what it
+  needs.
+- Android release signing requires a GitHub Environment. A job only reaches
+  environment secrets by declaring the environment, and a caller job that
+  `uses:` a reusable workflow cannot declare one — so the declaration sits
+  inside `flutter-android.yml`, and `sign: true` without an environment fails on
+  purpose. Pull-request builds are debug-signed and never see the key.
+- Actions here are pinned to tags, not commit SHAs — a mutable reference, and
+  the one real supply-chain gap left. Convert with `pinact run` and let
+  Dependabot maintain them.
 
-## Releasing
+## License
 
-`@v1` is a moving tag, so a bad commit here breaks every pipeline at once. Work
-on `main`, and move `v1` only after the change has run green on one project. For
-a change that breaks callers, cut `v2` and migrate the projects one at a time.
+[MIT](LICENSE).

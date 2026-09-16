@@ -1,20 +1,21 @@
 # =============================================================================
-# CI — the gate in front of `develop`.
+# CI — the gate in front of your default branch.
 # =============================================================================
-# Every piece of work is a branch, opened as a pull request against `develop`.
-# This runs there and nowhere near a server: cloud runners only, no secret, no
-# access to the office network. Merging is what "green" buys you.
+# Copy this into a project's .github/workflows/ci.yml and adjust the jobs you
+# need. Delete the ones you don't (e.g. drop `flutter` for a backend-only repo,
+# or `backend` for a Flutter-only repo).
 #
-# The heavy lifting lives in CtrlAltDevelop/ci-workflows so the other projects
-# run the same checks without four copies drifting apart.
+# Runs on cloud runners only: no secret, no server, no self-hosted access.
+# The heavy lifting lives in CtrlAltDevelop/ci-workflows so multiple projects
+# run the same checks without copies drifting apart.
 
 name: CI
 
 on:
   pull_request:
-    branches: [develop]
+    branches: [main]
   push:
-    branches: [develop]
+    branches: [main]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -27,14 +28,9 @@ jobs:
     name: Backend
     uses: CtrlAltDevelop/ci-workflows/.github/workflows/python-backend.yml@v1
     with:
-      working-directory: sources/backend
+      working-directory: backend
+      python-version: "3.14"
       mypy: true
-      # The suite runs on the light stack — SQLite, in-process cache, Celery
-      # inline — which is what the staging server runs too. Nothing here needs
-      # a database container.
-      postgres: false
-      redis: false
-      extra-env: STACK_LITE=true
 
   security:
     name: Security
@@ -44,23 +40,18 @@ jobs:
       security-events: write
       pull-requests: write
     with:
-      # Python only. The Android side is Flutter scaffolding whose Gradle build
-      # CodeQL cannot resolve without a Flutter toolchain, and analysing it
-      # would report on generated code rather than on anything written here.
       languages: '["python"]'
 
-  dashboard:
-    name: Dashboard
+  app:
+    name: App
     uses: CtrlAltDevelop/ci-workflows/.github/workflows/flutter-android.yml@v1
     with:
-      working-directory: sources/dashboard
+      working-directory: app
       flutter-version: "3.47.0"
       # Debug-signed. This job is reachable from a pull request, so it must
-      # never be handed the upload key.
+      # never be handed the upload key. See flutter-android.yml for signing.
       sign: false
+      # Any codegen your app needs before `flutter analyze`, one command per
+      # line. Remove if you have none.
       codegen: |
-        dart run tool/generate_tokens.dart
-        flutter gen-l10n
-        dart run swagger_parser
-        dart run tool/patch_enums.dart --strict
         dart run build_runner build --delete-conflicting-outputs

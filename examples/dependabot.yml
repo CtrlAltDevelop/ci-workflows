@@ -1,14 +1,12 @@
-# Actions first: an unpinned or abandoned action is the most direct route into a
-# pipeline that can execute code on the staging server.
+# Actions first: an unpinned or abandoned action is the most direct route into
+# a pipeline that can execute code in your repository.
 #
-# Every update opens against `develop`, not the default branch: `main` is
-# dormant until there is a production server, and a pull request there would
-# never be merged.
+# Copy this into a project's .github/dependabot.yml and delete whichever
+# ecosystems you don't have (e.g. drop `pub`/`gradle` for a backend-only repo).
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: "/"
-    target-branch: develop
     schedule:
       interval: weekly
     groups:
@@ -16,8 +14,7 @@ updates:
         patterns: ["*"]
 
   - package-ecosystem: pip
-    directory: /sources/backend
-    target-branch: develop
+    directory: /backend
     schedule:
       interval: weekly
     groups:
@@ -25,25 +22,16 @@ updates:
         update-types: [minor, patch]
 
   - package-ecosystem: pub
-    directory: /sources/dashboard
-    target-branch: develop
-    schedule:
-      interval: weekly
-
-  - package-ecosystem: pub
-    directory: /sources/landing
-    target-branch: develop
+    directory: /app
     schedule:
       interval: weekly
 
   - package-ecosystem: gradle
-    directory: /sources/dashboard/android
-    target-branch: develop
+    directory: /app/android
     schedule:
       interval: weekly
 
   - package-ecosystem: docker
-    directory: /sources/backend
-    target-branch: develop
+    directory: /backend
     schedule:
       interval: weekly
