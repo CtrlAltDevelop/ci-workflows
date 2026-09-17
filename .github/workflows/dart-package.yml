@@ -108,7 +108,7 @@ jobs:
       - uses: subosito/flutter-action@v2
         if: inputs.sdk == 'flutter'
         with:
-          flutter-version: ${{ inputs.sdk-version }}
+          flutter-version: ${{ inputs.sdk-version != 'stable' && inputs.sdk-version || '' }}
           channel: stable
           cache: true
 
@@ -172,7 +172,7 @@ jobs:
       - uses: subosito/flutter-action@v2
         if: inputs.sdk == 'flutter'
         with:
-          flutter-version: ${{ inputs.sdk-version }}
+          flutter-version: ${{ inputs.sdk-version != 'stable' && inputs.sdk-version || '' }}
           channel: stable
           cache: true
 
@@ -222,7 +222,7 @@ jobs:
       - uses: subosito/flutter-action@v2
         if: inputs.sdk == 'flutter'
         with:
-          flutter-version: ${{ inputs.sdk-version }}
+          flutter-version: ${{ inputs.sdk-version != 'stable' && inputs.sdk-version || '' }}
           channel: stable
           cache: true
 
