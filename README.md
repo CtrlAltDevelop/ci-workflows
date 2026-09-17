@@ -8,15 +8,16 @@ versioned once.
 **Checks only.** There is no deploy workflow here, and that is deliberate — see
 *Why there is no deploy* below.
 
-## The three workflows
+## The four workflows
 
 | File | Does | Sees secrets |
 |---|---|---|
 | `python-backend.yml` | ruff, mypy, pytest (Postgres/Redis optional), `pip-audit` | no |
 | `security.yml` | gitleaks over full history, CodeQL, Trivy, dependency-review | no |
 | `flutter-android.yml` | analyze, test, and an APK when asked for one | keystore, only when signing |
+| `dart-package.yml` | format, analyze, test, the example, changelog and pana | no |
 
-All three run on GitHub's cloud runners. None of them touches a server, holds a
+All four run on GitHub's cloud runners. None of them touches a server, holds a
 key, or has any route into a private network.
 
 ## Using it
@@ -29,9 +30,27 @@ entries; a Flutter-only repo drops `backend` and `pip`/`docker`), then adjust
 layout. That is the whole integration — about twenty lines per project, so a
 fix here fixes every project at once.
 
+### Packages, not apps
+
+`flutter-android.yml` verifies an application; `dart-package.yml` verifies
+something you publish to pub.dev, which needs a different gate — formatting,
+`--fatal-infos` analysis, tests, the `example/` (which pana does not look at),
+a CHANGELOG entry for the version in `pubspec.yaml`, and the pub.dev score
+itself with `--exit-code-threshold 0`. A caller is two lines:
+
+```yaml
+jobs:
+  package:
+    uses: CtrlAltDevelop/ci-workflows/.github/workflows/dart-package.yml@v1.1.0
+    with:
+      sdk: flutter        # or "dart" for a package with no Flutter dependency
+      runs-on: macos-latest   # only if the package has golden tests
+```
+
 Each workflow's inputs are documented as comments in its `on: workflow_call:`
 block — see [`python-backend.yml`](.github/workflows/python-backend.yml),
-[`flutter-android.yml`](.github/workflows/flutter-android.yml) and
+[`flutter-android.yml`](.github/workflows/flutter-android.yml),
+[`dart-package.yml`](.github/workflows/dart-package.yml) and
 [`security.yml`](.github/workflows/security.yml) for the full list.
 
 ## The moving tag, and how it bites
@@ -49,6 +68,16 @@ git push origin main && git tag -f -a v1 -m "v1" && git push -f origin v1
 
 For a change that breaks callers, cut `v2` and migrate projects one at a time
 rather than moving `v1`.
+
+`dart-package.yml` arrived in **`v1.1.0`**, and the sixteen package repositories
+pin that tag rather than a moving major tag. A pinned tag does not move, so
+those repos opt into a change here instead of receiving it — worth it on a
+gate that blocks sixteen release pipelines at once. Cut `v1.2.0` for the next
+change to it and bump the callers:
+
+```bash
+git push origin main && git tag -a v1.2.0 -m "v1.2.0" && git push origin v1.2.0
+```
 
 ## Access
 

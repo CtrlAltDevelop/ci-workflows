@@ -1,0 +1,266 @@
+# =============================================================================
+# Reusable: verify a publishable Dart or Flutter package.
+# =============================================================================
+# The gate a published package actually needs — formatting, analysis, tests,
+# the example, and the pub.dev score — rather than the app checks in
+# flutter-android.yml, which builds an APK a package does not have.
+#
+#   uses: CtrlAltDevelop/ci-workflows/.github/workflows/dart-package.yml@v1.1.0
+#   with:
+#     sdk: flutter
+#
+# Everything else has a default that suits a single-package repository with an
+# `example/` beside it.
+#
+on:
+  workflow_call:
+    inputs:
+      sdk:
+        description: |
+          "flutter" for a package that depends on the Flutter SDK, "dart" for
+          one that does not. A Flutter package cannot be analysed by the Dart
+          SDK alone, and a pure Dart package gets a faster runner without it.
+        type: string
+        required: true
+      sdk-version:
+        description: |
+          Flutter version (e.g. "3.47.0") or Dart SDK version. "stable" tracks
+          the current release, which is what you want on a package whose users
+          are on whatever shipped last week.
+        type: string
+        default: "stable"
+      working-directory:
+        type: string
+        default: "."
+      runs-on:
+        description: |
+          Set to macos-latest when the package has golden tests: goldens are
+          rasterised, and a golden recorded on one platform fails on another
+          over pixels nobody changed.
+        type: string
+        default: "ubuntu-latest"
+      format:
+        description: "Fail on unformatted Dart"
+        type: boolean
+        default: true
+      analyze-example:
+        description: |
+          Analyze and test example/ when it exists. The example is not covered
+          by pana's static analysis, so it rots quietly without this.
+        type: boolean
+        default: true
+      lowest-resolution:
+        description: |
+          Also run the tests with every dependency pinned to the lowest version
+          the constraints allow. Off by default: `pub downgrade` floors the
+          test runner's own transitive packages too, which on some packages
+          fails for reasons that say nothing about your code.
+        type: boolean
+        default: false
+      coverage:
+        description: "Collect coverage and upload it as an artifact"
+        type: boolean
+        default: false
+      changelog:
+        description: |
+          Require CHANGELOG.md to carry an entry for the version in
+          pubspec.yaml. pana only checks that a changelog exists, so without
+          this a version bump ships with no note of what changed in it.
+        type: boolean
+        default: true
+      pana:
+        description: "Score the package the way pub.dev does"
+        type: boolean
+        default: true
+      pana-threshold:
+        description: |
+          Points the package may lose before the job fails. 0 means a perfect
+          score is the gate — worth holding on a package you publish.
+        type: number
+        default: 0
+      timeout-minutes:
+        type: number
+        default: 20
+
+permissions: {}
+
+jobs:
+  test:
+    name: Test (${{ matrix.resolution }})
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Floated constraints are only a real promise if both ends are run.
+        resolution: ${{ inputs.lowest-resolution && fromJSON('["highest","lowest"]') || fromJSON('["highest"]') }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: subosito/flutter-action@v2
+        if: inputs.sdk == 'flutter'
+        with:
+          flutter-version: ${{ inputs.sdk-version }}
+          channel: stable
+          cache: true
+
+      - uses: dart-lang/setup-dart@v1
+        if: inputs.sdk != 'flutter'
+        with:
+          sdk: ${{ inputs.sdk-version }}
+
+      - run: ${{ inputs.sdk }} pub get
+
+      - name: Floor every dependency
+        if: matrix.resolution == 'lowest'
+        run: ${{ inputs.sdk }} pub downgrade
+
+      - name: Verify formatting
+        # Once per package, not once per resolution: formatting does not depend
+        # on which versions resolved.
+        if: inputs.format && matrix.resolution == 'highest'
+        run: dart format --output=none --set-exit-if-changed .
+
+      - name: Analyze
+        run: ${{ inputs.sdk }} analyze --fatal-infos
+
+      # `flutter test --coverage` takes no argument; `dart test` requires the
+      # output directory, so the flag is not spelled the same in both SDKs.
+      - name: Test
+        run: ${{ inputs.sdk }} test ${{ (inputs.coverage && matrix.resolution == 'highest') && (inputs.sdk == 'flutter' && '--coverage' || '--coverage=coverage') || '' }}
+
+      # Goldens write what they actually rendered next to what was expected;
+      # without them a red golden run tells you nothing you can act on.
+      - name: Upload failed goldens
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: golden-failures-${{ matrix.resolution }}
+          path: ${{ inputs.working-directory }}/test/failures/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        if: inputs.coverage && matrix.resolution == 'highest'
+        with:
+          name: coverage
+          path: ${{ inputs.working-directory }}/coverage/
+          if-no-files-found: warn
+          retention-days: 7
+
+  example:
+    name: Example
+    if: inputs.analyze-example
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: subosito/flutter-action@v2
+        if: inputs.sdk == 'flutter'
+        with:
+          flutter-version: ${{ inputs.sdk-version }}
+          channel: stable
+          cache: true
+
+      - uses: dart-lang/setup-dart@v1
+        if: inputs.sdk != 'flutter'
+        with:
+          sdk: ${{ inputs.sdk-version }}
+
+      # Skipped rather than failed when there is no example: a package without
+      # one is a fair choice, and the caller should not have to say so twice.
+      - name: Analyze and test the example
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          SDK: ${{ inputs.sdk }}
+        run: |
+          if [ ! -f example/pubspec.yaml ]; then
+            echo "No example/ — nothing to check."
+            exit 0
+          fi
+          "$SDK" pub get
+          cd example
+          "$SDK" pub get
+          "$SDK" analyze --fatal-infos
+          # `test` on a package with no test/ exits non-zero; an example is
+          # allowed to be a demo and nothing more.
+          if [ -d test ]; then "$SDK" test; fi
+
+  score:
+    name: Score
+    if: inputs.pana
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # pana reads the repository's git metadata to check the pubspec's
+          # repository link, so it wants real history, not a shallow clone.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: subosito/flutter-action@v2
+        if: inputs.sdk == 'flutter'
+        with:
+          flutter-version: ${{ inputs.sdk-version }}
+          channel: stable
+          cache: true
+
+      - uses: dart-lang/setup-dart@v1
+        if: inputs.sdk != 'flutter'
+        with:
+          sdk: ${{ inputs.sdk-version }}
+
+      - name: Changelog covers this version
+        if: inputs.changelog
+        run: |
+          version="$(grep -m1 '^version:' pubspec.yaml | sed 's/^version:[[:space:]]*//' | tr -d '"'"'"'"' | tr -d '[:space:]')"
+          if [ -z "$version" ]; then
+            echo "::error::pubspec.yaml has no version."
+            exit 1
+          fi
+          if [ ! -f CHANGELOG.md ]; then
+            echo "::error::No CHANGELOG.md."
+            exit 1
+          fi
+          # Matched loosely — `## 1.2.0`, `## [1.2.0]`, `# 1.2.0 - 2026-09-17`
+          # are all normal headings and all say the same thing.
+          if ! grep -qE "(^|[^0-9.])${version//./\\.}([^0-9.]|$)" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no entry for $version."
+            exit 1
+          fi
+          echo "CHANGELOG.md covers $version."
+
+      - run: ${{ inputs.sdk }} pub get
+
+      # pana covers `pub publish --dry-run` and then some: publish readiness,
+      # documentation, declared platform support, static analysis and how far
+      # behind the dependencies are.
+      - name: Score with pana
+        run: |
+          dart pub global activate pana
+          pana --no-warning --exit-code-threshold ${{ inputs.pana-threshold }}
+
+      # No dependency audit here, for the same reason as flutter-android.yml:
+      # pub has no advisory command that exits non-zero. Trivy reads
+      # pubspec.lock in security.yml, and Dependabot watches the pub ecosystem.
