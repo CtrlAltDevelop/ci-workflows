@@ -253,6 +253,14 @@ jobs:
 
       - run: ${{ inputs.sdk }} pub get
 
+      # pana checks each `screenshots:` entry by running webpinfo, cwebp and
+      # gif2webp on it. A runner without them fails every screenshot with "No
+      # such file or directory" — and the job with exit code 127 — although
+      # nothing is wrong with the images. All three ship in the webp package.
+      - name: Install WebP tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y webp
+
       # pana covers `pub publish --dry-run` and then some: publish readiness,
       # documentation, declared platform support, static analysis and how far
       # behind the dependencies are.

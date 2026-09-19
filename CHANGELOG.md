@@ -8,6 +8,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 — where "breaking" means a caller has to change its `with:` block.
 
+## [1.1.1] — 2026-09-19
+
+### Fixed
+
+- `dart-package.yml`: install the `webp` tools before pana. pana runs
+  `webpinfo`, `cwebp` and `gif2webp` on every `screenshots:` entry, and a
+  runner without them lost the 10 "no issues with screenshots" points and
+  failed with exit code 127, however sound the images.
+
 ## [1.1.0] — 2026-09-17
 
 ### Added
