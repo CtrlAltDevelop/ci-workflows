@@ -5,10 +5,12 @@ project keeps one thin workflow file; everything complicated — lint, type
 checks, tests, dependency and secret scanning — lives here once and is
 versioned once.
 
-**Checks only.** There is no deploy workflow here, and that is deliberate — see
-*Why there is no deploy* below.
+**No server deploys.** There is no workflow that deploys to a server, and that
+is deliberate — see *Why there is no deploy* below. Publishing a package to
+pub.dev and a demo to GitHub Pages are here, because neither touches a server
+or holds a stored secret: both trust the run's OIDC token.
 
-## The four workflows
+## The workflows
 
 | File | Does | Sees secrets |
 |---|---|---|
@@ -16,8 +18,10 @@ versioned once.
 | `security.yml` | gitleaks over full history, CodeQL, Trivy, dependency-review | no |
 | `flutter-android.yml` | analyze, test, and an APK when asked for one | keystore, only when signing |
 | `dart-package.yml` | format, analyze, test, the example, changelog and pana | no |
+| `dart-publish.yml` | publishes a package to pub.dev from a `v1.2.3` tag on main | no (OIDC) |
+| `flutter-web-pages.yml` | builds a Flutter app (by default `example/`) for the web and deploys it to GitHub Pages | no (OIDC) |
 
-All four run on GitHub's cloud runners. None of them touches a server, holds a
+All of them run on GitHub's cloud runners. None of them touches a server, holds a
 key, or has any route into a private network.
 
 ## Using it
@@ -46,6 +50,11 @@ jobs:
       sdk: flutter        # or "dart" for a package with no Flutter dependency
       runs-on: macos-latest   # only if the package has golden tests
 ```
+
+A package that releases from tags and shows its example as a live demo adds
+two more thin callers; the usage, permissions and one-off setup are in the
+header comments of [`dart-publish.yml`](.github/workflows/dart-publish.yml)
+and [`flutter-web-pages.yml`](.github/workflows/flutter-web-pages.yml).
 
 Each workflow's inputs are documented as comments in its `on: workflow_call:`
 block — see [`python-backend.yml`](.github/workflows/python-backend.yml),

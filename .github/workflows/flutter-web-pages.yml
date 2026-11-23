@@ -1,0 +1,76 @@
+# =============================================================================
+# Reusable: build a Flutter app for the web and deploy it to GitHub Pages.
+# =============================================================================
+# Made for a package's example/ as a live demo, but any Flutter app works.
+# The calling repository needs Settings > Pages > Source set to "GitHub
+# Actions", and the caller job must grant the permissions below.
+#
+#   jobs:
+#     pages:
+#       uses: CtrlAltDevelop/ci-workflows/.github/workflows/flutter-web-pages.yml@v1.2.0
+#       permissions:
+#         contents: read
+#         pages: write
+#         id-token: write
+#
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: "The Flutter app to build"
+        type: string
+        default: "example"
+      base-href:
+        description: |
+          Path the site is served under. Empty means "/<repository name>/",
+          which is right for a project site on <owner>.github.io. A wrong
+          value leaves a blank page.
+        type: string
+        default: ""
+      flutter-version:
+        description: '"stable" or an exact version such as "3.47.0"'
+        type: string
+        default: "stable"
+
+permissions: {}
+
+jobs:
+  build:
+    name: Build for the web
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ inputs.flutter-version == 'stable' && 'stable' || '' }}
+          flutter-version: ${{ inputs.flutter-version != 'stable' && inputs.flutter-version || '' }}
+          cache: true
+
+      - name: Build
+        env:
+          BASE_HREF: ${{ inputs.base-href || format('/{0}/', github.event.repository.name) }}
+        run: flutter build web --release --base-href "$BASE_HREF"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ inputs.working-directory }}/build/web
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

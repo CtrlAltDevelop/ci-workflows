@@ -1,0 +1,117 @@
+# =============================================================================
+# Reusable: publish a Dart or Flutter package to pub.dev from a version tag.
+# =============================================================================
+# Called from a workflow that runs on a `v1.2.3` tag push. Nothing is published
+# unless the tag is on main, matches the version in pubspec.yaml and has its
+# CHANGELOG entry. No secret is stored: pub.dev trusts the run's OIDC token.
+#
+#   on:
+#     push:
+#       tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+#   jobs:
+#     publish:
+#       uses: CtrlAltDevelop/ci-workflows/.github/workflows/dart-publish.yml@v1.2.0
+#       permissions:
+#         contents: read
+#         id-token: write
+#       with:
+#         sdk: flutter
+#
+# One-off setup on pub.dev (package Admin tab > Automated publishing):
+#   - enable publishing from GitHub Actions for the calling repository
+#   - tag pattern: v{{version}}
+#   - require the GitHub Actions environment named in `environment` below
+# and create that environment in the calling repository's settings, with a
+# required reviewer if every publish should be approved by hand.
+#
+on:
+  workflow_call:
+    inputs:
+      sdk:
+        description: '"flutter" or "dart", as in dart-package.yml.'
+        type: string
+        required: true
+      sdk-version:
+        type: string
+        default: "stable"
+      working-directory:
+        type: string
+        default: "."
+      environment:
+        description: |
+          GitHub Environment the publish job runs in. pub.dev can require it,
+          and it is where a required reviewer goes.
+        type: string
+        default: "pub.dev"
+
+permissions: {}
+
+jobs:
+  verify:
+    name: Verify the release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: The tag is on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME is not on main; release from main."
+            exit 1
+          fi
+
+      - name: The tag matches the pubspec version
+        run: |
+          version=$(sed -n 's/^version: *//p' pubspec.yaml | tr -d '\r')
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match pubspec version $version."
+            exit 1
+          fi
+
+      - name: The CHANGELOG has an entry for it
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if ! grep -q "^## \[\?$version\b" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## $version' entry."
+            exit 1
+          fi
+
+  publish:
+    name: Publish to pub.dev
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      # Lets pub.dev trust this run without a stored secret.
+      id-token: write
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # Sets up the credentials pub.dev issues to this run.
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ inputs.sdk == 'dart' && inputs.sdk-version || 'stable' }}
+
+      - if: inputs.sdk == 'flutter'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ inputs.sdk-version == 'stable' && 'stable' || '' }}
+          flutter-version: ${{ inputs.sdk-version != 'stable' && inputs.sdk-version || '' }}
+          cache: true
+
+      - name: Dry run
+        run: ${{ inputs.sdk }} pub publish --dry-run
+
+      - name: Publish
+        run: ${{ inputs.sdk }} pub publish --force

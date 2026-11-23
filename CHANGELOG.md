@@ -8,6 +8,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 — where "breaking" means a caller has to change its `with:` block.
 
+## [1.2.0] — 2026-11-23
+
+### Added
+
+- `dart-publish.yml`: publishes a package to pub.dev from a version tag, once
+  the tag is on main, matches `pubspec.yaml` and has a CHANGELOG entry. pub.dev
+  trusts the run's OIDC token, so no secret is stored.
+- `flutter-web-pages.yml`: builds a Flutter app — `example/` by default — for
+  the web and deploys it to GitHub Pages, with `base-href` defaulting to the
+  repository name.
+
 ## [1.1.1] — 2026-09-19
 
 ### Fixed
