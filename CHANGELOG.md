@@ -18,6 +18,8 @@ and the versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `flutter-web-pages.yml`: builds a Flutter app — `example/` by default — for
   the web and deploys it to GitHub Pages, with `base-href` defaulting to the
   repository name.
+- `dart-test.yml`: runs a package's tests and nothing else, for a pull request
+  gate that should not also format, score or build the example.
 
 ## [1.1.1] — 2026-09-19
 

@@ -1,0 +1,77 @@
+# =============================================================================
+# Reusable: run a Dart or Flutter package's tests, and nothing else.
+# =============================================================================
+# The lean gate for a pull request into main. Formatting, the example, the
+# changelog and the pub.dev score are left to dart-package.yml, for a caller
+# that wants them.
+#
+#   uses: CtrlAltDevelop/ci-workflows/.github/workflows/dart-test.yml@v1.2.0
+#   with:
+#     sdk: flutter
+#
+on:
+  workflow_call:
+    inputs:
+      sdk:
+        description: '"flutter" for a package that depends on the Flutter SDK, "dart" for one that does not.'
+        type: string
+        required: true
+      sdk-version:
+        description: 'Flutter or Dart SDK version (e.g. "3.47.0"), or "stable".'
+        type: string
+        default: "stable"
+      working-directory:
+        type: string
+        default: "."
+      runs-on:
+        description: |
+          Set to macos-latest when the package has golden tests: goldens are
+          rasterised, and a golden recorded on one platform fails on another.
+        type: string
+        default: "ubuntu-latest"
+      timeout-minutes:
+        type: number
+        default: 20
+
+permissions: {}
+
+jobs:
+  test:
+    name: Test
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: subosito/flutter-action@v2
+        if: inputs.sdk == 'flutter'
+        with:
+          flutter-version: ${{ inputs.sdk-version != 'stable' && inputs.sdk-version || '' }}
+          channel: stable
+          cache: true
+
+      - uses: dart-lang/setup-dart@v1
+        if: inputs.sdk != 'flutter'
+        with:
+          sdk: ${{ inputs.sdk-version }}
+
+      - run: ${{ inputs.sdk }} pub get
+
+      - run: ${{ inputs.sdk }} test
+
+      # A red golden tells you nothing without what was actually rendered.
+      - name: Upload failed goldens
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: golden-failures
+          path: ${{ inputs.working-directory }}/test/failures/
+          if-no-files-found: ignore
+          retention-days: 7
