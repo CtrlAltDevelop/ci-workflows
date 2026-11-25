@@ -20,6 +20,12 @@ and the versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   repository name.
 - `dart-test.yml`: runs a package's tests and nothing else, for a pull request
   gate that should not also format, score or build the example.
+- `python-test.yml`: installs a uv-managed Python project and runs its tests,
+  with optional Postgres and Redis services and a hook to pin a dependency —
+  the matrix lives on the caller's job.
+- `python-publish.yml`: builds a Python package and publishes it to PyPI from a
+  version tag or release, after checking the tag against the built wheel's
+  version. PyPI trusts the run's OIDC token, so no secret is stored.
 
 ## [1.1.1] — 2026-09-19
 

@@ -1,0 +1,110 @@
+# =============================================================================
+# Reusable: build a Python package and publish it to PyPI from a version tag.
+# =============================================================================
+# Called from a workflow that runs on a `v1.2.3` tag push (or a published
+# release, which carries the same tag). Nothing is published unless the tag
+# matches the version of the wheel that was just built — read from the wheel
+# itself, so it works whether the version is static or computed. No stored
+# secret: PyPI trusts the run's OIDC token.
+#
+#   on:
+#     push:
+#       tags: ["v*"]
+#   jobs:
+#     publish:
+#       uses: CtrlAltDevelop/ci-workflows/.github/workflows/python-publish.yml@v1.2.0
+#       permissions:
+#         contents: read
+#         id-token: write
+#       with:
+#         package-name: my-package
+#
+# One-off setup on PyPI (project > Publishing > Trusted publishers): add this
+# repository, the CALLING workflow's file name (not this one), and the
+# environment named in `environment` below. Create that environment in the
+# calling repository's settings, with a required reviewer if every release
+# should be approved by hand.
+#
+on:
+  workflow_call:
+    inputs:
+      package-name:
+        description: "The name on PyPI; only used for the environment's link"
+        type: string
+        required: true
+      python-version:
+        type: string
+        default: "3.13"
+      working-directory:
+        type: string
+        default: "."
+      environment:
+        description: "GitHub Environment the publish job runs in"
+        type: string
+        default: "pypi"
+      skip-existing:
+        description: |
+          Do not fail on files PyPI already has, so a re-run or a re-tag is
+          harmless.
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - run: uv build
+
+      - name: The tag matches the built version
+        run: |
+          # <name>-<version>-<tags>.whl
+          wheel=$(basename dist/*.whl)
+          version=$(echo "$wheel" | cut -d- -f2)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match built version $version."
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: ${{ inputs.working-directory }}/dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: ${{ inputs.environment }}
+      url: https://pypi.org/project/${{ inputs.package-name }}/
+    permissions:
+      # The OIDC token PyPI exchanges for a short-lived upload credential.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: ${{ inputs.skip-existing }}

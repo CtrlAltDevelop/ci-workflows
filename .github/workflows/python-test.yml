@@ -1,0 +1,129 @@
+# =============================================================================
+# Reusable: install a uv-managed Python project and run its tests.
+# =============================================================================
+# The lean gate for a pull request into main — tests, and nothing else. Lint,
+# types and the dependency audit are left to python-backend.yml and
+# security.yml, for a caller that wants them.
+#
+#   jobs:
+#     test:
+#       uses: CtrlAltDevelop/ci-workflows/.github/workflows/python-test.yml@v1.2.0
+#       permissions:
+#         contents: read
+#
+# The defaults suit a project with a `uv.lock` and pytest in its dev group. For
+# anything else, say how to install and how to test:
+#
+#       with:
+#         install: uv venv && uv pip install -e '.[dev]'
+#         test-command: uv run --no-sync pytest
+#
+# A matrix belongs on the caller's job (`strategy.matrix`), and its values can
+# be passed in `with:` — one reusable workflow, any number of combinations.
+#
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        type: string
+        default: "."
+      python-version:
+        type: string
+        default: "3.14"
+      install:
+        description: "Shell command that installs the project and its test tools"
+        type: string
+        default: "uv sync --locked"
+      before-test:
+        description: |
+          Shell command to run after install and before the tests, e.g. pinning
+          a dependency to the version a matrix cell is about. Empty means none.
+        type: string
+        default: ""
+      test-command:
+        description: |
+          Shell command that runs the tests. `--no-sync` keeps `uv run` from
+          undoing whatever `before-test` pinned.
+        type: string
+        default: "uv run --no-sync pytest -ra"
+      postgres:
+        description: "Start a Postgres service container"
+        type: boolean
+        default: false
+      postgres-image:
+        type: string
+        default: "postgres:17"
+      redis:
+        description: "Start a Redis service container"
+        type: boolean
+        default: false
+      env:
+        description: "Newline-separated KEY=VALUE pairs for the test step"
+        type: string
+        default: ""
+      timeout-minutes:
+        type: number
+        default: 20
+
+permissions: {}
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: ${{ inputs.postgres && inputs.postgres-image || '' }}
+        env:
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_pass
+          POSTGRES_DB: test_db
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+      redis:
+        image: ${{ inputs.redis && 'redis:7-alpine' || '' }}
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://test_user:test_pass@localhost:5432/test_db
+      REDIS_URL: redis://localhost:6379/0
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install
+        env:
+          INSTALL: ${{ inputs.install }}
+        run: eval "$INSTALL"
+
+      - name: Before the tests
+        if: inputs.before-test != ''
+        env:
+          BEFORE_TEST: ${{ inputs.before-test }}
+        run: eval "$BEFORE_TEST"
+
+      - name: Collect extra environment
+        if: inputs.env != ''
+        env:
+          EXTRA_ENV: ${{ inputs.env }}
+        run: printf '%s\n' "$EXTRA_ENV" >> "$GITHUB_ENV"
+
+      - name: Test
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: eval "$TEST_COMMAND"

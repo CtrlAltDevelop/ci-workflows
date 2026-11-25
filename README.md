@@ -18,6 +18,8 @@ or holds a stored secret: both trust the run's OIDC token.
 | `security.yml` | gitleaks over full history, CodeQL, Trivy, dependency-review | no |
 | `flutter-android.yml` | analyze, test, and an APK when asked for one | keystore, only when signing |
 | `dart-package.yml` | format, analyze, test, the example, changelog and pana | no |
+| `python-test.yml` | uv install and tests only, optional Postgres/Redis — the lean pull-request gate | no |
+| `python-publish.yml` | builds and publishes a package to PyPI from a version tag or release | no (OIDC) |
 | `dart-test.yml` | pub get and test only — the lean pull-request gate for a package | no |
 | `dart-publish.yml` | publishes a package to pub.dev from a `v1.2.3` tag on main | no (OIDC) |
 | `flutter-web-pages.yml` | builds a Flutter app (by default `example/`) for the web and deploys it to GitHub Pages | no (OIDC) |
