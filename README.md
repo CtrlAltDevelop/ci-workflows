@@ -1,5 +1,10 @@
 # ci-workflows
 
+[![latest tag](https://img.shields.io/github/v/tag/CtrlAltDevelop/ci-workflows.svg?label=tag)](https://github.com/CtrlAltDevelop/ci-workflows/tags)
+[![license: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
+[![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-reusable%20workflows-2088FF.svg?logo=githubactions&logoColor=white)](.github/workflows)
+[![last commit](https://img.shields.io/github/last-commit/CtrlAltDevelop/ci-workflows.svg)](https://github.com/CtrlAltDevelop/ci-workflows/commits)
+
 Reusable GitHub Actions checks for Python and Flutter projects. Each caller
 project keeps one thin workflow file; everything complicated — lint, type
 checks, tests, dependency and secret scanning — lives here once and is
@@ -142,6 +147,10 @@ workflow still lives.
   the one real supply-chain gap left. Convert with `pinact run` and let
   Dependabot maintain them.
 
+## Releases
+
+Versions and what changed in each are in the [CHANGELOG](CHANGELOG.md); the latest tag is shown in the badge above.
+
 ## License
 
-[MIT](LICENSE).
+[AGPL-3.0-only](LICENSE).
